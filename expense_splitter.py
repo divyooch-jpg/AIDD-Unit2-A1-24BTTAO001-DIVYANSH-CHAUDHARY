@@ -1,12 +1,9 @@
-"""Command-line expense splitter (scaffold).
-
-Settlement math is not implemented yet. Subcommands parse arguments and
-call stub handlers that print "not implemented".
-"""
+"""Command-line expense splitter."""
 
 from __future__ import annotations
 
 import argparse
+import json
 from dataclasses import dataclass, field
 
 
@@ -28,13 +25,22 @@ class Expense:
     participants: list[str] = field(default_factory=list)
 
 
-def add_participant(name: str) -> Participant:
-    """Add a participant to the group.
+_participants: dict[str, Participant] = {}
+_expenses: list[Expense] = []
 
-    Settlement and persistence are not implemented yet.
+
+def add_participant(name: str) -> Participant:
+    """Add a new participant to the group.
+
+    Args:
+        name: Display name of the participant.
+
+    Returns:
+        The newly created Participant instance.
     """
-    print("not implemented")
-    return Participant(name=name)
+    participant = Participant(name=name)
+    _participants[name] = participant
+    return participant
 
 
 def add_expense(
@@ -43,31 +49,132 @@ def add_expense(
     description: str,
     participants: list[str],
 ) -> Expense:
-    """Record a shared expense.
+    """Record a shared expense paid by one person and split among others.
 
-    Settlement and persistence are not implemented yet.
+    Args:
+        payer: Name of the person who paid.
+        amount: Amount paid.
+        description: What the expense was for.
+        participants: Names of people who share this expense.
+
+    Returns:
+        The newly created Expense instance.
     """
-    print("not implemented")
-    return Expense(
+    expense = Expense(
         payer=payer,
         amount=amount,
         description=description,
-        participants=participants,
+        participants=list(participants),
     )
+    _expenses.append(expense)
+    if payer not in _participants:
+        add_participant(payer)
+    for name in expense.participants:
+        if name not in _participants:
+            add_participant(name)
+    return expense
 
 
-def report() -> None:
-    """Print a balances and settlements report.
+def calculate_balances(expenses: list[Expense]) -> dict[str, float]:
+    """Compute each participant's net balance.
 
-    Settlement math is not implemented yet.
+    Args:
+        expenses: All recorded expenses to include in the calculation.
+
+    Returns:
+        A mapping of participant name to net balance (positive = owed money, negative = owes money).
     """
-    print("not implemented")
+    balances: dict[str, float] = {name: 0.0 for name in _participants}
+    for expense in expenses:
+        if not expense.participants:
+            continue
+        share = expense.amount / len(expense.participants)
+        balances.setdefault(expense.payer, 0.0)
+        balances[expense.payer] += expense.amount
+        for name in expense.participants:
+            balances.setdefault(name, 0.0)
+            balances[name] -= share
+    for name, participant in _participants.items():
+        participant.balance = balances.get(name, 0.0)
+    return balances
+
+
+def calculate_settlements(balances: dict[str, float]) -> list[dict]:
+    """Compute payments that settle all balances to zero.
+
+    Args:
+        balances: Net balance per participant (positive = owed money, negative = owes money).
+
+    Returns:
+        A list of {"from": str, "to": str, "amount": float} payment objects.
+    """
+    remaining = dict(balances)
+    debtors = sorted(
+        [(name, amount) for name, amount in remaining.items() if amount < 0],
+        key=lambda item: item[1],
+    )
+    creditors = sorted(
+        [(name, amount) for name, amount in remaining.items() if amount > 0],
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    settlements: list[dict] = []
+    i = 0
+    j = 0
+    while i < len(debtors) and j < len(creditors):
+        debtor_name, debtor_amount = debtors[i]
+        creditor_name, creditor_amount = creditors[j]
+        amount = min(-debtor_amount, creditor_amount)
+        if amount > 0:
+            settlements.append(
+                {"from": debtor_name, "to": creditor_name, "amount": amount}
+            )
+        debtor_amount += amount
+        creditor_amount -= amount
+        debtors[i] = (debtor_name, debtor_amount)
+        creditors[j] = (creditor_name, creditor_amount)
+        if abs(debtor_amount) < 1e-9:
+            i += 1
+        if abs(creditor_amount) < 1e-9:
+            j += 1
+    return settlements
+
+
+def generate_report(balances: dict[str, float]) -> dict:
+    """Build a JSON-serializable report of balances and settlements.
+
+    Args:
+        balances: Net balance per participant.
+
+    Returns:
+        A dict with keys "balances" (dict) and "settlements" (list of {"from": str, "to": str, "amount": float}).
+    """
+    return {
+        "balances": dict(balances),
+        "settlements": calculate_settlements(balances),
+    }
+
+
+def report() -> dict:
+    """Print a JSON report of current balances and settlements.
+
+    Returns:
+        The JSON-serializable report dict that was printed.
+    """
+    balances = calculate_balances(_expenses)
+    payload = generate_report(balances)
+    print(json.dumps(payload, indent=2))
+    return payload
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the argparse CLI with add-participant, add-expense, and report."""
+    """Build the argparse CLI with add-participant, add-expense, and report.
+
+    Returns:
+        The configured argument parser.
+    """
     parser = argparse.ArgumentParser(
-        description="Track shared expenses and (later) settle balances.",
+        description="Track shared expenses and settle balances.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -117,7 +224,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Parse CLI arguments and dispatch to stub handlers."""
+    """Parse CLI arguments and dispatch to the matching handler.
+
+    Args:
+        argv: Optional argument list. If omitted, sys.argv is used.
+
+    Returns:
+        None.
+    """
     parser = build_parser()
     args = parser.parse_args(argv)
 
