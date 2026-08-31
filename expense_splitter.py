@@ -99,8 +99,35 @@ def calculate_balances(expenses: list[Expense]) -> dict[str, float]:
     return balances
 
 
+def _dollars_to_cents(amount: float) -> int:
+    """Convert a dollar amount to an integer number of cents.
+
+    Args:
+        amount: Dollar amount, which may be a binary float.
+
+    Returns:
+        The nearest integer cent value.
+    """
+    return int(round(amount * 100))
+
+
+def _cents_to_dollars(cents: int) -> float:
+    """Convert an integer cent amount back to dollars.
+
+    Args:
+        cents: Amount in whole cents.
+
+    Returns:
+        The dollar amount as a float with at most two decimal places of meaning.
+    """
+    return cents / 100.0
+
+
 def calculate_settlements(balances: dict[str, float]) -> list[dict]:
-    """Compute payments that settle all balances to zero.
+    """Compute the minimum payments needed to settle all debts to zero.
+
+    Internally converts balances to integer cents so greedy matching cannot
+    leave a leftover $0.01 from binary floating-point representation.
 
     Args:
         balances: Net balance per participant (positive = owed money, negative = owes money).
@@ -108,34 +135,49 @@ def calculate_settlements(balances: dict[str, float]) -> list[dict]:
     Returns:
         A list of {"from": str, "to": str, "amount": float} payment objects.
     """
-    remaining = dict(balances)
+    cents: dict[str, int] = {
+        name: _dollars_to_cents(amount) for name, amount in balances.items()
+    }
+    remainder = sum(cents.values())
+    if remainder != 0:
+        # Rounding each balance independently can be off by a cent. Fold that
+        # residue into the participant with the largest absolute balance so
+        # the integer ledger still sums to zero before matching.
+        anchor = max(cents, key=lambda name: abs(cents[name]))
+        cents[anchor] -= remainder
+
     debtors = sorted(
-        [(name, amount) for name, amount in remaining.items() if amount < 0],
+        [(name, amount) for name, amount in cents.items() if amount < 0],
         key=lambda item: item[1],
     )
     creditors = sorted(
-        [(name, amount) for name, amount in remaining.items() if amount > 0],
+        [(name, amount) for name, amount in cents.items() if amount > 0],
         key=lambda item: item[1],
         reverse=True,
     )
+
     settlements: list[dict] = []
     i = 0
     j = 0
     while i < len(debtors) and j < len(creditors):
-        debtor_name, debtor_amount = debtors[i]
-        creditor_name, creditor_amount = creditors[j]
-        amount = min(-debtor_amount, creditor_amount)
-        if amount > 0:
+        debtor_name, debtor_cents = debtors[i]
+        creditor_name, creditor_cents = creditors[j]
+        payment_cents = min(-debtor_cents, creditor_cents)
+        if payment_cents > 0:
             settlements.append(
-                {"from": debtor_name, "to": creditor_name, "amount": amount}
+                {
+                    "from": debtor_name,
+                    "to": creditor_name,
+                    "amount": _cents_to_dollars(payment_cents),
+                }
             )
-        debtor_amount += amount
-        creditor_amount -= amount
-        debtors[i] = (debtor_name, debtor_amount)
-        creditors[j] = (creditor_name, creditor_amount)
-        if abs(debtor_amount) < 1e-9:
+        debtor_cents += payment_cents
+        creditor_cents -= payment_cents
+        debtors[i] = (debtor_name, debtor_cents)
+        creditors[j] = (creditor_name, creditor_cents)
+        if debtor_cents == 0:
             i += 1
-        if abs(creditor_amount) < 1e-9:
+        if creditor_cents == 0:
             j += 1
     return settlements
 
